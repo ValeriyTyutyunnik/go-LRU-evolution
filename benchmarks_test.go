@@ -98,7 +98,7 @@ func BenchmarkV4_Container_Sequential(b *testing.B) {
 }
 
 func BenchmarkV5_Generic_Sequential(b *testing.B) {
-	cache, _ := v5_generic.NewCache[int](cacheCapacity, 1)
+	cache, _ := v5_generic.NewCache[int, string](cacheCapacity, 1)
 
 	for i := 0; b.Loop(); i++ {
 		key := i % maxKey
@@ -453,7 +453,7 @@ func BenchmarkV5_Generic_UltimateSuite(b *testing.B) {
 
 	for _, s := range scenarios {
 		b.Run(s.Name, func(b *testing.B) {
-			cache, _ := v5_generic.NewCache[int](cacheCapacity, shardsCount)
+			cache, _ := v5_generic.NewCache[int, string](cacheCapacity, shardsCount)
 
 			// Предзаполнение кэша базовыми данными (Warmup), чтобы избежать пустых Get
 			for i := range cacheCapacity {

@@ -6,20 +6,20 @@ import (
 	"testing"
 )
 
-type kv[K HashableKey] struct {
+type kv[K HashableKey, V any] struct {
 	key K
-	val interface{}
+	val V
 }
 
 func TestNewCache_AllTypes(t *testing.T) {
 	// Запускаем один и тот же набор тестов для разных типов ключей
-	testNewCache[string](t, "[string]")
-	testNewCache[int](t, "[int]")
-	testNewCache[uint32](t, "[uint32]")
-	testNewCache[uint64](t, "[uint64]")
+	testNewCache[string, string](t, "[string]")
+	testNewCache[int, string](t, "[int]")
+	testNewCache[uint32, string](t, "[uint32]")
+	testNewCache[uint64, string](t, "[uint64]")
 }
 
-func testNewCache[K HashableKey](t *testing.T, typeName string) {
+func testNewCache[K HashableKey, V any](t *testing.T, typeName string) {
 	tests := []struct {
 		name       string
 		capacity   int
@@ -122,7 +122,7 @@ func testNewCache[K HashableKey](t *testing.T, typeName string) {
 	}
 	for _, tt := range tests {
 		t.Run(typeName+"/"+tt.name, func(t *testing.T) {
-			cache, err := NewCache[K](tt.capacity, tt.shards)
+			cache, err := NewCache[K, V](tt.capacity, tt.shards)
 
 			if tt.wantErr && err == nil {
 				t.Fatalf("Инициализация не вернула ожидаемую ошибку")
@@ -178,83 +178,83 @@ func testNewCache[K HashableKey](t *testing.T, typeName string) {
 // Распределение по 2 шардам по ключам 0-32 (x64):
 // 1 5 6 9 11 12 13 14 15 17 18 19 20 22 23 24 26 28 30
 
-type delTestCase[K HashableKey] struct {
+type delTestCase[K HashableKey, V any] struct {
 	name          string
 	shardCount    int
 	shardCapacity int
-	vals          []kv[K] // Начальные данные для наполнения кэша
-	delKey        K       // Удаляемый ключ
-	wantRemaining []kv[K] // Какие элементы ДОЛЖНЫ остаться во всем кэше (в любом шарде)
-	dontWantKeys  []K     // Какие ключи ДОЛЖНЫ исчезнуть
+	vals          []kv[K, V] // Начальные данные для наполнения кэша
+	delKey        K          // Удаляемый ключ
+	wantRemaining []kv[K, V] // Какие элементы ДОЛЖНЫ остаться во всем кэше (в любом шарде)
+	dontWantKeys  []K        // Какие ключи ДОЛЖНЫ исчезнуть
 }
 
 func TestCache_DeleteNodeByKey(t *testing.T) {
-	tc_int := []delTestCase[int]{
+	tc_int := []delTestCase[int, string]{
 		{
 			name:          "Удаление единственного элемента из кэша",
 			shardCount:    4,
 			shardCapacity: 2,
-			vals:          []kv[int]{{10, "v10"}},
+			vals:          []kv[int, string]{{10, "v10"}},
 			delKey:        10,
-			wantRemaining: []kv[int]{},
+			wantRemaining: []kv[int, string]{},
 			dontWantKeys:  []int{10},
 		},
 		{
 			name:          "Удаление элемента при наличии других данных в кэше",
 			shardCount:    2,
 			shardCapacity: 5,
-			vals:          []kv[int]{{10, "v10"}, {20, "v20"}, {30, "v30"}},
+			vals:          []kv[int, string]{{10, "v10"}, {20, "v20"}, {30, "v30"}},
 			delKey:        20,
-			wantRemaining: []kv[int]{{10, "v10"}, {30, "v30"}},
+			wantRemaining: []kv[int, string]{{10, "v10"}, {30, "v30"}},
 			dontWantKeys:  []int{20},
 		},
 		{
 			name:          "Удаление несуществующего ключа (ничего не меняется)",
 			shardCount:    2,
 			shardCapacity: 2,
-			vals:          []kv[int]{{1, "a"}, {2, "b"}},
+			vals:          []kv[int, string]{{1, "a"}, {2, "b"}},
 			delKey:        999, // Ключа нет в кэше
-			wantRemaining: []kv[int]{{1, "a"}, {2, "b"}},
+			wantRemaining: []kv[int, string]{{1, "a"}, {2, "b"}},
 			dontWantKeys:  []int{999},
 		},
 	}
 	testCache_DeleteNodeByKey(t, "[int]", tc_int)
-	tc_str := []delTestCase[string]{
+	tc_str := []delTestCase[string, string]{
 		{
 			name:          "Удаление единственного элемента из кэша",
 			shardCount:    4,
 			shardCapacity: 2,
-			vals:          []kv[string]{{"value_10", "v10"}},
+			vals:          []kv[string, string]{{"value_10", "v10"}},
 			delKey:        "value_10",
-			wantRemaining: []kv[string]{},
+			wantRemaining: []kv[string, string]{},
 			dontWantKeys:  []string{"value_10"},
 		},
 		{
 			name:          "Удаление элемента при наличии других данных в кэше",
 			shardCount:    2,
 			shardCapacity: 5,
-			vals:          []kv[string]{{"value_10", "v10"}, {"value_20", "v20"}, {"value_30", "v30"}},
+			vals:          []kv[string, string]{{"value_10", "v10"}, {"value_20", "v20"}, {"value_30", "v30"}},
 			delKey:        "value_20",
-			wantRemaining: []kv[string]{{"value_10", "v10"}, {"value_30", "v30"}},
+			wantRemaining: []kv[string, string]{{"value_10", "v10"}, {"value_30", "v30"}},
 			dontWantKeys:  []string{"value_20"},
 		},
 		{
 			name:          "Удаление несуществующего ключа (ничего не меняется)",
 			shardCount:    2,
 			shardCapacity: 2,
-			vals:          []kv[string]{{"value_10", "a"}, {"value_20", "b"}},
+			vals:          []kv[string, string]{{"value_10", "a"}, {"value_20", "b"}},
 			delKey:        "value_999", // Ключа нет в кэше
-			wantRemaining: []kv[string]{{"value_10", "a"}, {"value_20", "b"}},
+			wantRemaining: []kv[string, string]{{"value_10", "a"}, {"value_20", "b"}},
 			dontWantKeys:  []string{"value_999"},
 		},
 	}
 	testCache_DeleteNodeByKey(t, "[string]", tc_str)
 }
 
-func testCache_DeleteNodeByKey[K HashableKey](t *testing.T, typeName string, tc []delTestCase[K]) {
+func testCache_DeleteNodeByKey[K HashableKey, V comparable](t *testing.T, typeName string, tc []delTestCase[K, V]) {
 	for _, tt := range tc {
 		t.Run(typeName+"/"+tt.name, func(t *testing.T) {
-			cache, err := NewCache[K](tt.shardCapacity, tt.shardCount)
+			cache, err := NewCache[K, V](tt.shardCapacity, tt.shardCount)
 
 			if err != nil {
 				t.Fatalf("NewCache() вернул ошибку: %v", err)
@@ -279,7 +279,7 @@ func testCache_DeleteNodeByKey[K HashableKey](t *testing.T, typeName string, tc 
 				// Интегрированная проверка: внутренний размер мапы должен совпадать со списком
 				listCount := 0
 				curr := shard.head
-				var lastNode *listNode[K]
+				var lastNode *listNode[K, V]
 
 				// Идем по двусвязному списку конкретного шарда
 				for curr != nil {
@@ -327,7 +327,7 @@ func testCache_DeleteNodeByKey[K HashableKey](t *testing.T, typeName string, tc 
 				if !exists {
 					t.Errorf("Ключ %v должен был остаться в кэше, но не найден ни в одном шарде", want.key)
 				} else if gotVal != want.val {
-					t.Errorf("Для оставшегося ключа %v ожидали значение %q, но получили %q", want.key, want.val, gotVal)
+					t.Errorf("Для оставшегося ключа %v ожидали значение %v, но получили %v", want.key, want.val, gotVal)
 				}
 			}
 
@@ -349,37 +349,37 @@ func TestCache_Put(t *testing.T) {
 // 3 5 9 10 11 13 14 15 17 18 19 20 21 23 24 26 30 - в шард 1, остальное в 0
 // Распределение по 2 шардам по ключам 0-32 (x64):
 // 1 5 6 9 11 12 13 14 15 17 18 19 20 22 23 24 26 28 30 - в шард 1, остальное в 0
-func testCache_Put[K int](t *testing.T) {
+func testCache_Put[K int, V string](t *testing.T) {
 	tests := []struct {
 		name          string
 		shardCapacity int
 		shardCount    int
-		vals          []kv[K] // Элементы для последовательной вставки
-		wantKV        []kv[K] // Что должно ОСТАТЬСЯ в кэше (в сумме по всем шардам)
-		dontWantKeys  []K     // Что должно ИСЧЕЗНУТЬ из кэша (вытесниться)
+		vals          []kv[K, V] // Элементы для последовательной вставки
+		wantKV        []kv[K, V] // Что должно ОСТАТЬСЯ в кэше (в сумме по всем шардам)
+		dontWantKeys  []K        // Что должно ИСЧЕЗНУТЬ из кэша (вытесниться)
 	}{
 		{
 			name:          "Кэш заполнен не полностью",
 			shardCapacity: 5,
 			shardCount:    4,
-			vals:          []kv[K]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}},
-			wantKV:        []kv[K]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}},
+			vals:          []kv[K, V]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}},
+			wantKV:        []kv[K, V]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}},
 			dontWantKeys:  []K{},
 		},
 		{
 			name:          "Обновление существующего ключа не вызывает вытеснения",
 			shardCapacity: 2,
 			shardCount:    2,
-			vals:          []kv[K]{{1, "a1"}, {2, "a2"}, {1, "b1"}}, // Независимо от шарда, ключ 1 просто обновится
-			wantKV:        []kv[K]{{1, "b1"}, {2, "a2"}},
+			vals:          []kv[K, V]{{1, "a1"}, {2, "a2"}, {1, "b1"}}, // Независимо от шарда, ключ 1 просто обновится
+			wantKV:        []kv[K, V]{{1, "b1"}, {2, "a2"}},
 			dontWantKeys:  []K{},
 		},
 		{
 			name:          "Общий тест на наполнение с запасом емкости",
 			shardCapacity: 8,
 			shardCount:    4,
-			vals:          []kv[K]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}},
-			wantKV:        []kv[K]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}},
+			vals:          []kv[K, V]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}},
+			wantKV:        []kv[K, V]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}},
 			dontWantKeys:  []K{},
 		},
 
@@ -387,8 +387,8 @@ func testCache_Put[K int](t *testing.T) {
 			name:          "Переполнение шарда", // 1 5 6 попадает в 1 шард
 			shardCapacity: 2,
 			shardCount:    2,
-			vals:          []kv[K]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}, {6, "a6"}, {7, "a7"}, {8, "a8"}},
-			wantKV:        []kv[K]{{7, "a7"}, {8, "a8"}, {6, "a6"}, {5, "a5"}},
+			vals:          []kv[K, V]{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}, {6, "a6"}, {7, "a7"}, {8, "a8"}},
+			wantKV:        []kv[K, V]{{7, "a7"}, {8, "a8"}, {6, "a6"}, {5, "a5"}},
 			dontWantKeys:  []K{},
 		},
 	}
@@ -396,7 +396,7 @@ func testCache_Put[K int](t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 1. Инициализация через новый конструктор с обработкой ошибки
-			cache, err := NewCache[K](tt.shardCapacity, tt.shardCount)
+			cache, err := NewCache[K, V](tt.shardCapacity, tt.shardCount)
 			if err != nil {
 				t.Fatalf("NewCache() вернул ошибку: %v", err)
 			}
@@ -413,13 +413,13 @@ func testCache_Put[K int](t *testing.T) {
 			// 3. Пошаговая проверка каждого шарда в отдельности
 			for shardIdx, shard := range cache.shards {
 				// Оборачиваем итерацию в анонимную функцию, чтобы безопасно использовать defer и t.Fatalf
-				func(idx int, s *cacheLRU[K]) {
+				func(idx int, s *cacheLRU[K, V]) {
 					s.mu.Lock()
 					defer s.mu.Unlock()
 
 					listCount := 0
 					curr := s.head
-					var lastNode *listNode[K]
+					var lastNode *listNode[K, V]
 
 					// Проверяем локальный двусвязный список текущего шарда
 					for curr != nil {
@@ -490,7 +490,7 @@ func testCache_Put[K int](t *testing.T) {
 func TestCache_Get(t *testing.T) {
 	testCache_Get(t)
 }
-func testCache_Get[K int](t *testing.T) {
+func testCache_Get[K int, V string](t *testing.T) {
 	type op struct {
 		name string // "put" или "get"
 		key  K
@@ -534,7 +534,7 @@ func testCache_Get[K int](t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cache, err := NewCache[K](tt.shardCapacity, tt.shardCount)
+			cache, err := NewCache[K, V](tt.shardCapacity, tt.shardCount)
 			if err != nil {
 				t.Fatalf("NewCache() вернул ошибку: %v", err)
 			}
@@ -545,7 +545,7 @@ func testCache_Get[K int](t *testing.T) {
 			for i, step := range tt.steps {
 				switch step.name {
 				case "put":
-					cache.Put(step.key, step.val)
+					cache.Put(step.key, V(step.val))
 					t.Logf("Шаг %d: Put(%d, %q)", i, step.key, step.val)
 				case "get":
 					res := cache.Get(step.key)
@@ -568,13 +568,13 @@ func testCache_Get[K int](t *testing.T) {
 
 			// 2. Сквозная валидация внутренней структуры по всем шардам
 			for shardIdx, shard := range cache.shards {
-				func(idx int, s *cacheLRU[K]) {
+				func(idx int, s *cacheLRU[K, V]) {
 					s.mu.Lock()
 					defer s.mu.Unlock()
 
 					listCount := 0
 					curr := s.head
-					var lastNode *listNode[K]
+					var lastNode *listNode[K, V]
 
 					for curr != nil {
 						listCount++
@@ -620,8 +620,8 @@ func TestCache_ConcurrentAccessLRU(t *testing.T) {
 	testCache_ConcurrentAccessLRU()
 }
 
-func testCache_ConcurrentAccessLRU[K int]() {
-	cache, _ := NewCache[K](10, 8)
+func testCache_ConcurrentAccessLRU[K int, V string]() {
+	cache, _ := NewCache[K, V](10, 8)
 	var wg sync.WaitGroup
 
 	// Запускаем 1000 горутин, которые одновременно пишут и читают
@@ -630,7 +630,7 @@ func testCache_ConcurrentAccessLRU[K int]() {
 		go func(val K) {
 			defer wg.Done()
 
-			cache.Put(val, fmt.Sprintf("val-%d", val))
+			cache.Put(val, V(fmt.Sprintf("val-%v", val)))
 			_ = cache.Get(val)
 		}(K(i))
 	}

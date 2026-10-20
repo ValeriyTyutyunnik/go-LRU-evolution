@@ -14,28 +14,28 @@ type HashableKey interface {
 	~string | ~int | ~uint32 | ~uint64
 }
 
-type listNode[K HashableKey] struct {
+type listNode[K HashableKey, V any] struct {
 	key  K
-	val  interface{}
-	prev *listNode[K]
-	next *listNode[K]
+	val  V
+	prev *listNode[K, V]
+	next *listNode[K, V]
 }
 
-type cacheLRU[K HashableKey] struct {
+type cacheLRU[K HashableKey, V any] struct {
 	cap  int
 	mu   sync.RWMutex
-	hash map[K]*listNode[K]
-	head *listNode[K]
-	tail *listNode[K]
+	hash map[K]*listNode[K, V]
+	head *listNode[K, V]
+	tail *listNode[K, V]
 }
 
-type Cache[K HashableKey] struct {
+type Cache[K HashableKey, V any] struct {
 	shardCapacity int
 	shardCount    int
-	shards        []*cacheLRU[K]
+	shards        []*cacheLRU[K, V]
 }
 
-func NewCache[K HashableKey](shardCapacity int, shardCount int) (*Cache[K], error) {
+func NewCache[K HashableKey, V any](shardCapacity int, shardCount int) (*Cache[K, V], error) {
 	if shardCount == 0 || (shardCount&(shardCount-1)) != 0 {
 		return nil, errors.New("значение shardCount должно быть степенью двойки")
 	}
@@ -43,21 +43,21 @@ func NewCache[K HashableKey](shardCapacity int, shardCount int) (*Cache[K], erro
 		slog.Warn("Некорректное значение capacity. инициализация кэша с shardCapacity=2")
 		shardCapacity = 2
 	}
-	res := &Cache[K]{shardCapacity: shardCapacity, shardCount: shardCount}
-	res.shards = make([]*cacheLRU[K], shardCount)
+	res := &Cache[K, V]{shardCapacity: shardCapacity, shardCount: shardCount}
+	res.shards = make([]*cacheLRU[K, V], shardCount)
 	for i := range shardCount {
-		res.shards[i] = &cacheLRU[K]{cap: shardCapacity, hash: make(map[K]*listNode[K], shardCapacity)}
+		res.shards[i] = &cacheLRU[K, V]{cap: shardCapacity, hash: make(map[K]*listNode[K, V], shardCapacity)}
 	}
 
 	return res, nil
 }
 
-func (c *Cache[K]) String() string {
+func (c *Cache[K, V]) String() string {
 	r := fmt.Sprintf("Cache shards=%v, shardCapacity=%d, totalCapacity=%d", c.shardCount, c.shardCapacity, int(c.shardCount)*c.shardCapacity)
 	return r
 }
 
-func (c *Cache[K]) getShardNo[T HashableKey](key T) int {
+func (c *Cache[K, V]) getShardNo[T HashableKey](key T) int {
 	switch v := any(key).(type) {
 	case string:
 		return int(buckets.ForStr(v, uint64(c.shardCount)))
@@ -72,7 +72,7 @@ func (c *Cache[K]) getShardNo[T HashableKey](key T) int {
 	}
 }
 
-func (c *cacheLRU[K]) moveToHead(list *listNode[K]) {
+func (c *cacheLRU[K, V]) moveToHead(list *listNode[K, V]) {
 	if c.head == list {
 		return
 	}
@@ -102,7 +102,7 @@ func (c *cacheLRU[K]) moveToHead(list *listNode[K]) {
 	}
 }
 
-func (c *cacheLRU[K]) deleteNode(list *listNode[K]) {
+func (c *cacheLRU[K, V]) deleteNode(list *listNode[K, V]) {
 	if list != nil {
 		delete(c.hash, list.key)
 		if list.prev != nil {
@@ -119,11 +119,11 @@ func (c *cacheLRU[K]) deleteNode(list *listNode[K]) {
 		}
 		list.prev = nil
 		list.next = nil
-		list.val = ""
+		list.val = *new(V)
 	}
 }
 
-func (c *cacheLRU[K]) deleteNodeByKey(key K) {
+func (c *cacheLRU[K, V]) deleteNodeByKey(key K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if list, ok := c.hash[key]; ok {
@@ -131,12 +131,12 @@ func (c *cacheLRU[K]) deleteNodeByKey(key K) {
 	}
 }
 
-func (c *cacheLRU[K]) get(key K) interface{} {
+func (c *cacheLRU[K, V]) get(key K) V {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	list, ok := c.hash[key]
 	if !ok {
-		return ""
+		return *new(V)
 	}
 
 	c.moveToHead(list)
@@ -144,7 +144,7 @@ func (c *cacheLRU[K]) get(key K) interface{} {
 	return list.val
 }
 
-func (c *cacheLRU[K]) put(key K, value interface{}) {
+func (c *cacheLRU[K, V]) put(key K, value V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if list, ok := c.hash[key]; ok {
@@ -157,19 +157,19 @@ func (c *cacheLRU[K]) put(key K, value interface{}) {
 		c.deleteNode(c.tail)
 	}
 
-	list := &listNode[K]{key: key, val: value}
+	list := &listNode[K, V]{key: key, val: value}
 	c.hash[key] = list
 	c.moveToHead(list)
 }
 
-func (c *Cache[K]) Get(key K) interface{} {
+func (c *Cache[K, V]) Get(key K) V {
 	return c.shards[c.getShardNo(key)].get(key)
 }
 
-func (c *Cache[K]) Put(key K, value interface{}) {
+func (c *Cache[K, V]) Put(key K, value V) {
 	c.shards[c.getShardNo(key)].put(key, value)
 }
 
-func (c *Cache[K]) DeleteNodeByKey(key K) {
+func (c *Cache[K, V]) DeleteNodeByKey(key K) {
 	c.shards[c.getShardNo(key)].deleteNodeByKey(key)
 }
