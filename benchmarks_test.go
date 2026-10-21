@@ -1,8 +1,8 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
-	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -12,14 +12,17 @@ import (
 	"github.com/ValeriyTyutyunnik/go-lru-evolution/v3_sharded"
 	"github.com/ValeriyTyutyunnik/go-lru-evolution/v4_container"
 	"github.com/ValeriyTyutyunnik/go-lru-evolution/v5_generic"
+	"github.com/ValeriyTyutyunnik/go-lru-evolution/v6_stats"
 )
 
 const (
-	cacheCapacity    = 3000
-	maxKey           = cacheCapacity * 2 // Создаем дефицит места, чтобы провоцировать вытеснение
-	shardsCount      = 32                // для шардированных версии, количество шардов
-	trendPhaseZone   = 100_000           // в сценарии "сдвиг тренда" кол-во операций для сдвига фазы
-	trendPhaseOffset = cacheCapacity * 5 // шаг горячей зоны
+	shardsCount      = 32                          // для шардированных версии, количество шардов
+	cacheCapacity    = 3000                        // размер кэша одного шарда
+	shardCapacity    = cacheCapacity * shardsCount // полный размер шардированного кэша
+	maxKey           = cacheCapacity * 2           // Создаем дефицит места, чтобы провоцировать вытеснение
+	maxKeySharded    = maxKey * shardsCount        // Дефицит места для шардированных бэнчей
+	trendPhaseZone   = 100_000                     // в сценарии "сдвиг тренда" кол-во операций для сдвига фазы
+	trendPhaseOffset = cacheCapacity * 5           // шаг горячей зоны
 )
 
 // Типы распределения данных
@@ -110,6 +113,20 @@ func BenchmarkV5_Generic_Sequential(b *testing.B) {
 	}
 }
 
+func BenchmarkV6_Stats_Sequential(b *testing.B) {
+	cache, _ := v6_stats.NewCache[int, string](cacheCapacity, 1)
+
+	for i := 0; b.Loop(); i++ {
+		key := i % maxKey
+		if i%2 == 0 {
+			cache.Put(key, "value")
+		} else {
+			cache.Get(key)
+		}
+	}
+	fmt.Println(cache.GatherStatistic())
+}
+
 // === КОНКУРЕНТНый РЕЖИМ (Parallel) ===
 
 // Первую версию (v1_base) сюда добавлять нельзя — она упадет из-за гонки !
@@ -127,20 +144,25 @@ func getBenchScenarios() []BenchScenario {
 	}
 }
 
-func BenchmarkV2_Threadsafe_UltimateSuite(b *testing.B) {
-	scenarios := getBenchScenarios()
+type ShardedCache interface {
+	Get(key int) string
+	Put(key int, value string)
+}
 
-	// Общий счетчик для последовательного сканирования и сдвигов
+type StatGatherer interface {
+	GatherStatistic() string
+}
+
+func BenchmarkV2_UltimateSuite(b *testing.B) {
+	scenarios := getBenchScenarios()
 	var globalCounter uint64
 
 	for _, s := range scenarios {
+		if s.Dist == DistShardSkewer {
+			continue // нет бакетов
+		}
 		b.Run(s.Name, func(b *testing.B) {
-			cache := v2_threadsafe.NewCache(cacheCapacity * shardsCount)
-
-			// Warmup
-			for i := range cacheCapacity {
-				cache.Put(i, "value_"+strconv.Itoa(i))
-			}
+			cache := v2_threadsafe.NewCache(shardCapacity)
 
 			// Сброс глобального счетчика перед каждым сценарием
 			atomic.StoreUint64(&globalCounter, 0)
@@ -152,14 +174,11 @@ func BenchmarkV2_Threadsafe_UltimateSuite(b *testing.B) {
 				src := rand.NewSource(routineSeed)
 				r := rand.New(src)
 
-				// Инициализация генератора Ципфа (коэффициенты s=1.1, v=1.0 — классика для кэшей)
+				// Инициализация генератора Ципфа
 				zipf := rand.NewZipf(r, 1.1, 1.0, uint64(maxKey-1))
 
 				// Границы для Парето 80/20
 				hotKeyBoundary := int(maxKey * 0.2) // 20% горячих ключей
-
-				// Локальный счетчик для последовательных операций горутины
-				localSeq := r.Intn(maxKey)
 
 				for pb.Next() {
 					var key int
@@ -181,24 +200,24 @@ func BenchmarkV2_Threadsafe_UltimateSuite(b *testing.B) {
 
 					case DistOneHitWonders:
 						if r.Float32() < 0.7 {
-							// 70% ключей — абсолютно уникальные "одноразки", которые никогда не повторятся
+							// 70% ключей — уникальные, никогда не повторятся
 							// Используем счетчик атомик, уходящий в бесконечность
 							key = int(atomic.AddUint64(&globalCounter, 1)) + maxKey
 						} else {
-							// Остальные 30% — стабильные ключи из базового пула
+							// 30% — стабильные ключи из базового пула
 							key = r.Intn(cacheCapacity)
 						}
 
 					case DistThunderingHerd:
 						if r.Float32() < 0.99 {
-							key = 42 // 99% горутин яростно бьют в один единственный ключ!
+							key = 42 // 99% запросов по одному ключу
 						} else {
 							key = r.Intn(maxKey)
 						}
 
 					case DistSequential:
 						// Атомарно инкрементируем ключ для непрерывного линейного сканирования всей таблицы
-						key = int(atomic.AddUint64(&globalCounter, 1) % maxKey)
+						key = int(atomic.AddUint64(&globalCounter, 1) % maxKeySharded)
 
 					case DistMovingHotspot:
 						// Сдвиг тренда: каждые trendPhaseZone  суммарных операций "горячая" зона прыгает на trendPhaseOffset ключей вперед
@@ -212,20 +231,17 @@ func BenchmarkV2_Threadsafe_UltimateSuite(b *testing.B) {
 						}
 						atomic.AddUint64(&globalCounter, 1)
 
-					case DistShardSkewer:
-						// Эмуляция плохой хэш-функции или коллизий.
-						// Генерируем ключи, которые кратны shardsCount.
-						// Если хэш-функция берет простой остаток от деления (key % shardsCount),
-						// то ВСЕ эти ключи полетят строго в 0-й шард, создав Lock Contention.
-						localSeq++
-						key = (localSeq % (maxKey / shardsCount)) * shardsCount
 					}
 
 					// --- ВЫБОР ОПЕРАЦИИ (READ / WRITE) ---
 					if r.Float32() < s.WriteRatio {
 						cache.Put(key, "value")
 					} else {
-						cache.Get(key)
+						v := cache.Get(key)
+						if s.Dist == DistSequential && v == "" {
+							cache.Put(key, "value")
+
+						}
 					}
 				}
 			})
@@ -233,39 +249,35 @@ func BenchmarkV2_Threadsafe_UltimateSuite(b *testing.B) {
 	}
 }
 
-func BenchmarkV3_Shared_UltimateSuite(b *testing.B) {
+func runUltimateSuite(b *testing.B, factory func() (ShardedCache, error)) {
 	scenarios := getBenchScenarios()
-
-	// Общий счетчик для последовательного сканирования и сдвигов
-	var globalCounter uint64
+	var globalCounter atomic.Uint64
 
 	for _, s := range scenarios {
 		b.Run(s.Name, func(b *testing.B) {
-			cache, _ := v3_sharded.NewCache(cacheCapacity, shardsCount)
-
-			// Предзаполнение кэша базовыми данными (Warmup), чтобы избежать пустых Get
-			for i := range cacheCapacity {
-				cache.Put(i, "value_"+strconv.Itoa(i))
+			// Вызываем фабрику. Каждый сценарий получает чистый экземпляр кэша.
+			cache, err := factory()
+			if err != nil {
+				b.Fatalf("err=%v", err)
 			}
 
-			// Сброс глобального счетчика перед каждым сценарием
-			atomic.StoreUint64(&globalCounter, 0)
-
+			globalCounter.Store(0)
 			b.ResetTimer()
+
 			b.RunParallel(func(pb *testing.PB) {
 				// Локальный генератор на горутину (Повторяемый Seed + защита от гонки за блокировки rand)
 				routineSeed := int64(1337 + rand.Intn(100000))
 				src := rand.NewSource(routineSeed)
 				r := rand.New(src)
 
-				// Инициализация генератора Ципфа (коэффициенты s=1.1, v=1.0 — классика для кэшей)
-				zipf := rand.NewZipf(r, 1.1, 1.0, uint64(maxKey-1))
+				// Инициализация генератора Ципфа
+				zipf := rand.NewZipf(r, 1.1, 1.0, uint64(maxKeySharded-1))
 
 				// Границы для Парето 80/20
-				hotKeyBoundary := int(maxKey * 0.2) // 20% горячих ключей
+				hotKeyBoundary := int(float64(maxKeySharded) * 0.2) // 20% горячих ключей
 
 				// Локальный счетчик для последовательных операций горутины
-				localSeq := r.Intn(maxKey)
+				localSeq := r.Intn(maxKeySharded)
 
 				for pb.Next() {
 					var key int
@@ -273,13 +285,13 @@ func BenchmarkV3_Shared_UltimateSuite(b *testing.B) {
 					// --- ВЫБОР КЛЮЧА СОГЛАСНО СЦЕНАРИЮ ---
 					switch s.Dist {
 					case DistUniform:
-						key = r.Intn(maxKey)
+						key = r.Intn(maxKeySharded)
 
 					case DistPareto80_20:
 						if r.Float32() < 0.8 { // 80% запросов бьют в 20% ключей
 							key = r.Intn(hotKeyBoundary)
 						} else {
-							key = hotKeyBoundary + r.Intn(maxKey-hotKeyBoundary)
+							key = hotKeyBoundary + r.Intn(maxKeySharded-hotKeyBoundary)
 						}
 
 					case DistZipfian:
@@ -287,266 +299,101 @@ func BenchmarkV3_Shared_UltimateSuite(b *testing.B) {
 
 					case DistOneHitWonders:
 						if r.Float32() < 0.7 {
-							// 70% ключей — абсолютно уникальные "одноразки", которые никогда не повторятся
+							// 70% ключей — уникальные, никогда не повторятся
 							// Используем счетчик атомик, уходящий в бесконечность
-							key = int(atomic.AddUint64(&globalCounter, 1)) + maxKey
+							key = int(globalCounter.Add(1)) + maxKeySharded
 						} else {
-							// Остальные 30% — стабильные ключи из базового пула
+							// 30% — стабильные ключи из базового пула
 							key = r.Intn(cacheCapacity)
 						}
 
 					case DistThunderingHerd:
 						if r.Float32() < 0.99 {
-							key = 42 // 99% горутин яростно бьют в один единственный ключ!
+							key = 42 // 99% запросов по одному ключу
 						} else {
-							key = r.Intn(maxKey)
+							key = r.Intn(maxKeySharded)
 						}
 
 					case DistSequential:
 						// Атомарно инкрементируем ключ для непрерывного линейного сканирования всей таблицы
-						key = int(atomic.AddUint64(&globalCounter, 1) % maxKey)
+						key = int(globalCounter.Add(1) % maxKeySharded)
 
 					case DistMovingHotspot:
 						// Сдвиг тренда: каждые trendPhaseZone  суммарных операций "горячая" зона прыгает на trendPhaseOffset ключей вперед
-						currentPhase := int(atomic.LoadUint64(&globalCounter) / trendPhaseZone)
-						offset := (currentPhase * trendPhaseOffset) % maxKey
+						currentPhase := int(globalCounter.Load() / trendPhaseZone)
+						offset := (currentPhase * trendPhaseOffset) % maxKeySharded
 
 						if r.Float32() < 0.8 {
-							key = (offset + r.Intn(1000)) % maxKey // Узкое текущее окно
+							key = (offset + r.Intn(1000)) % maxKeySharded // Узкое текущее окно
 						} else {
-							key = r.Intn(maxKey)
+							key = r.Intn(maxKeySharded)
 						}
-						atomic.AddUint64(&globalCounter, 1)
+						globalCounter.Add(1)
 
 					case DistShardSkewer:
 						// Эмуляция плохой хэш-функции или коллизий.
-						// Генерируем ключи, которые кратны shardsCount.
-						// Если хэш-функция берет простой остаток от деления (key % shardsCount),
-						// то ВСЕ эти ключи полетят строго в 0-й шард, создав Lock Contention.
+						// Если хэш-функция берет простой остаток от деления (key % shardsCount), то ВСЕ эти ключи полетят в 0-й шард, создав Lock Contention
 						localSeq++
-						key = (localSeq % (maxKey / shardsCount)) * shardsCount
+						key = (localSeq % (maxKeySharded / shardsCount)) * shardsCount
 					}
 
 					// --- ВЫБОР ОПЕРАЦИИ (READ / WRITE) ---
 					if r.Float32() < s.WriteRatio {
 						cache.Put(key, "value")
 					} else {
-						cache.Get(key)
+						v := cache.Get(key)
+						if s.Dist == DistSequential && v == "" {
+							cache.Put(key, "value")
+
+						}
 					}
 				}
 			})
+
+			if sg, ok := cache.(StatGatherer); ok {
+				fmt.Println(s.Name, sg.GatherStatistic())
+			}
 		})
 	}
 }
 
-func BenchmarkV4_Cache_UltimateSuite(b *testing.B) {
-	scenarios := getBenchScenarios()
-
-	// Общий счетчик для последовательного сканирования и сдвигов
-	var globalCounter uint64
-
-	for _, s := range scenarios {
-		b.Run(s.Name, func(b *testing.B) {
-			cache, _ := v4_container.NewCache(cacheCapacity, shardsCount)
-
-			// Предзаполнение кэша базовыми данными (Warmup), чтобы избежать пустых Get
-			for i := range cacheCapacity {
-				cache.Put(i, "value_"+strconv.Itoa(i))
-			}
-
-			// Сброс глобального счетчика перед каждым сценарием
-			atomic.StoreUint64(&globalCounter, 0)
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				// Локальный генератор на горутину (Повторяемый Seed + защита от гонки за блокировки rand)
-				routineSeed := int64(1337 + rand.Intn(100000))
-				src := rand.NewSource(routineSeed)
-				r := rand.New(src)
-
-				// Инициализация генератора Ципфа (коэффициенты s=1.1, v=1.0 — классика для кэшей)
-				zipf := rand.NewZipf(r, 1.1, 1.0, uint64(maxKey-1))
-
-				// Границы для Парето 80/20
-				hotKeyBoundary := int(maxKey * 0.2) // 20% горячих ключей
-
-				// Локальный счетчик для последовательных операций горутины
-				localSeq := r.Intn(maxKey)
-
-				for pb.Next() {
-					var key int
-
-					// --- ВЫБОР КЛЮЧА СОГЛАСНО СЦЕНАРИЮ ---
-					switch s.Dist {
-					case DistUniform:
-						key = r.Intn(maxKey)
-
-					case DistPareto80_20:
-						if r.Float32() < 0.8 { // 80% запросов бьют в 20% ключей
-							key = r.Intn(hotKeyBoundary)
-						} else {
-							key = hotKeyBoundary + r.Intn(maxKey-hotKeyBoundary)
-						}
-
-					case DistZipfian:
-						key = int(zipf.Uint64())
-
-					case DistOneHitWonders:
-						if r.Float32() < 0.7 {
-							// 70% ключей — абсолютно уникальные "одноразки", которые никогда не повторятся
-							// Используем счетчик атомик, уходящий в бесконечность
-							key = int(atomic.AddUint64(&globalCounter, 1)) + maxKey
-						} else {
-							// Остальные 30% — стабильные ключи из базового пула
-							key = r.Intn(cacheCapacity)
-						}
-
-					case DistThunderingHerd:
-						if r.Float32() < 0.99 {
-							key = 42 // 99% горутин яростно бьют в один единственный ключ!
-						} else {
-							key = r.Intn(maxKey)
-						}
-
-					case DistSequential:
-						// Атомарно инкрементируем ключ для непрерывного линейного сканирования всей таблицы
-						key = int(atomic.AddUint64(&globalCounter, 1) % maxKey)
-
-					case DistMovingHotspot:
-						// Сдвиг тренда: каждые trendPhaseZone  суммарных операций "горячая" зона прыгает на trendPhaseOffset ключей вперед
-						currentPhase := int(atomic.LoadUint64(&globalCounter) / trendPhaseZone)
-						offset := (currentPhase * trendPhaseOffset) % maxKey
-
-						if r.Float32() < 0.8 {
-							key = (offset + r.Intn(1000)) % maxKey // Узкое текущее окно
-						} else {
-							key = r.Intn(maxKey)
-						}
-						atomic.AddUint64(&globalCounter, 1)
-
-					case DistShardSkewer:
-						// Эмуляция плохой хэш-функции или коллизий.
-						// Генерируем ключи, которые кратны shardsCount.
-						// Если хэш-функция берет простой остаток от деления (key % shardsCount),
-						// то ВСЕ эти ключи полетят строго в 0-й шард, создав Lock Contention.
-						localSeq++
-						key = (localSeq % (maxKey / shardsCount)) * shardsCount
-					}
-
-					// --- ВЫБОР ОПЕРАЦИИ (READ / WRITE) ---
-					if r.Float32() < s.WriteRatio {
-						cache.Put(key, "value")
-					} else {
-						cache.Get(key)
-					}
-				}
-			})
-		})
-	}
+func BenchmarkV3_UltimateSuite(b *testing.B) {
+	runUltimateSuite(b, func() (ShardedCache, error) {
+		c, err := v3_sharded.NewCache(cacheCapacity, shardsCount)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	})
 }
 
-func BenchmarkV5_Generic_UltimateSuite(b *testing.B) {
-	scenarios := getBenchScenarios()
+func BenchmarkV4_UltimateSuite(b *testing.B) {
+	runUltimateSuite(b, func() (ShardedCache, error) {
+		c, err := v4_container.NewCache(cacheCapacity, shardsCount)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	})
+}
 
-	// Общий счетчик для последовательного сканирования и сдвигов
-	var globalCounter uint64
+func BenchmarkV5_UltimateSuite(b *testing.B) {
+	runUltimateSuite(b, func() (ShardedCache, error) {
+		// Обычный вызов старого конструктора
+		c, err := v5_generic.NewCache[int, string](cacheCapacity, shardsCount)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	})
+}
 
-	for _, s := range scenarios {
-		b.Run(s.Name, func(b *testing.B) {
-			cache, _ := v5_generic.NewCache[int, string](cacheCapacity, shardsCount)
-
-			// Предзаполнение кэша базовыми данными (Warmup), чтобы избежать пустых Get
-			for i := range cacheCapacity {
-				cache.Put(i, "value_"+strconv.Itoa(i))
-			}
-
-			// Сброс глобального счетчика перед каждым сценарием
-			atomic.StoreUint64(&globalCounter, 0)
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				// Локальный генератор на горутину (Повторяемый Seed + защита от гонки за блокировки rand)
-				routineSeed := int64(1337 + rand.Intn(100000))
-				src := rand.NewSource(routineSeed)
-				r := rand.New(src)
-
-				// Инициализация генератора Ципфа (коэффициенты s=1.1, v=1.0 — классика для кэшей)
-				zipf := rand.NewZipf(r, 1.1, 1.0, uint64(maxKey-1))
-
-				// Границы для Парето 80/20
-				hotKeyBoundary := int(maxKey * 0.2) // 20% горячих ключей
-
-				// Локальный счетчик для последовательных операций горутины
-				localSeq := r.Intn(maxKey)
-
-				for pb.Next() {
-					var key int
-
-					// --- ВЫБОР КЛЮЧА СОГЛАСНО СЦЕНАРИЮ ---
-					switch s.Dist {
-					case DistUniform:
-						key = r.Intn(maxKey)
-
-					case DistPareto80_20:
-						if r.Float32() < 0.8 { // 80% запросов бьют в 20% ключей
-							key = r.Intn(hotKeyBoundary)
-						} else {
-							key = hotKeyBoundary + r.Intn(maxKey-hotKeyBoundary)
-						}
-
-					case DistZipfian:
-						key = int(zipf.Uint64())
-
-					case DistOneHitWonders:
-						if r.Float32() < 0.7 {
-							// 70% ключей — абсолютно уникальные "одноразки", которые никогда не повторятся
-							// Используем счетчик атомик, уходящий в бесконечность
-							key = int(atomic.AddUint64(&globalCounter, 1)) + maxKey
-						} else {
-							// Остальные 30% — стабильные ключи из базового пула
-							key = r.Intn(cacheCapacity)
-						}
-
-					case DistThunderingHerd:
-						if r.Float32() < 0.99 {
-							key = 42 // 99% горутин яростно бьют в один единственный ключ!
-						} else {
-							key = r.Intn(maxKey)
-						}
-
-					case DistSequential:
-						// Атомарно инкрементируем ключ для непрерывного линейного сканирования всей таблицы
-						key = int(atomic.AddUint64(&globalCounter, 1) % maxKey)
-
-					case DistMovingHotspot:
-						// Сдвиг тренда: каждые trendPhaseZone  суммарных операций "горячая" зона прыгает на trendPhaseOffset ключей вперед
-						currentPhase := int(atomic.LoadUint64(&globalCounter) / trendPhaseZone)
-						offset := (currentPhase * trendPhaseOffset) % maxKey
-
-						if r.Float32() < 0.8 {
-							key = (offset + r.Intn(1000)) % maxKey // Узкое текущее окно
-						} else {
-							key = r.Intn(maxKey)
-						}
-						atomic.AddUint64(&globalCounter, 1)
-
-					case DistShardSkewer:
-						// Эмуляция плохой хэш-функции или коллизий.
-						// Генерируем ключи, которые кратны shardsCount.
-						// Если хэш-функция берет простой остаток от деления (key % shardsCount),
-						// то ВСЕ эти ключи полетят строго в 0-й шард, создав Lock Contention.
-						localSeq++
-						key = (localSeq % (maxKey / shardsCount)) * shardsCount
-					}
-
-					// --- ВЫБОР ОПЕРАЦИИ (READ / WRITE) ---
-					if r.Float32() < s.WriteRatio {
-						cache.Put(key, "value")
-					} else {
-						cache.Get(key)
-					}
-				}
-			})
-		})
-	}
+func BenchmarkV6_UltimateSuite(b *testing.B) {
+	runUltimateSuite(b, func() (ShardedCache, error) {
+		c, err := v6_stats.NewCache[int, string](cacheCapacity, shardsCount)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	})
 }

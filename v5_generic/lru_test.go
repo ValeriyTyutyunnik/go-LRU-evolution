@@ -36,17 +36,18 @@ func testNewCache[K HashableKey, V any](t *testing.T, typeName string) {
 			wantErr:  true,
 		},
 		{
-			name:     "Ошибочная инициализация, количество шардов не степень двойки",
-			capacity: 2,
-			shards:   7,
-			wantErr:  true,
-		},
-		{
 			name:       "Инициализация 1 шарда",
 			capacity:   2,
 			wantCap:    2,
 			shards:     1,
 			wantShards: 1,
+		},
+		{
+			name:       "Инициализация 7 шардов",
+			capacity:   2,
+			wantCap:    2,
+			shards:     7,
+			wantShards: 7,
 		},
 		{
 			name:       "Обычная инициализация",
@@ -617,11 +618,16 @@ func testCache_Get[K int, V string](t *testing.T) {
 }
 
 func TestCache_ConcurrentAccessLRU(t *testing.T) {
-	testCache_ConcurrentAccessLRU()
+	testCache_ConcurrentAccessLRU(t)
 }
 
-func testCache_ConcurrentAccessLRU[K int, V string]() {
-	cache, _ := NewCache[K, V](10, 8)
+func testCache_ConcurrentAccessLRU[K int, V string](t *testing.T) {
+	cache, err := NewCache[K, V](10, 8)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+		return
+	}
+
 	var wg sync.WaitGroup
 
 	// Запускаем 1000 горутин, которые одновременно пишут и читают

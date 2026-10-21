@@ -26,13 +26,13 @@ type cacheLRU struct {
 
 type Cache struct {
 	shardCapacity int
-	shardCount    uint32
+	shardCount    int
 	shards        []*cacheLRU
 }
 
-func NewCache(shardCapacity int, shardCount uint32) (*Cache, error) {
-	if shardCount == 0 || (shardCount&(shardCount-1)) != 0 {
-		return nil, errors.New("значение shardCount должно быть степенью двойки")
+func NewCache(shardCapacity int, shardCount int) (*Cache, error) {
+	if shardCount <= 0 {
+		return nil, errors.New("значение shardCount должно быть положительным числом")
 	}
 	if shardCapacity < 2 {
 		slog.Warn("Некорректное значение capacity. инициализация кэша с shardCapacity=2")
@@ -53,7 +53,7 @@ func (c *Cache) String() string {
 }
 
 func (c *Cache) getShardNo(key int) int {
-	return int(buckets.For32(uint32(key), c.shardCount))
+	return int(buckets.For64(uint64(key), uint64(c.shardCount)))
 }
 
 func (c *cacheLRU) moveToHead(list *listNode) {

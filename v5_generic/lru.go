@@ -36,8 +36,8 @@ type Cache[K HashableKey, V any] struct {
 }
 
 func NewCache[K HashableKey, V any](shardCapacity int, shardCount int) (*Cache[K, V], error) {
-	if shardCount == 0 || (shardCount&(shardCount-1)) != 0 {
-		return nil, errors.New("значение shardCount должно быть степенью двойки")
+	if shardCount <= 0 {
+		return nil, errors.New("значение shardCount должно быть положительным числом")
 	}
 	if shardCapacity < 2 {
 		slog.Warn("Некорректное значение capacity. инициализация кэша с shardCapacity=2")

@@ -16,7 +16,7 @@ func TestNewCache(t *testing.T) {
 		name       string
 		capacity   int
 		forceCap   int // принудительно выставляемый cap
-		shards     uint32
+		shards     int
 		wantCap    int
 		wantShards int
 		wantErr    bool
@@ -28,17 +28,18 @@ func TestNewCache(t *testing.T) {
 			wantErr:  true,
 		},
 		{
-			name:     "Ошибочная инициализация, количество шардов не степень двойки",
-			capacity: 2,
-			shards:   7,
-			wantErr:  true,
-		},
-		{
 			name:       "Инициализация 1 шарда",
 			capacity:   2,
 			wantCap:    2,
 			shards:     1,
 			wantShards: 1,
+		},
+		{
+			name:       "Инициализация 7 шардов",
+			capacity:   2,
+			wantCap:    2,
+			shards:     7,
+			wantShards: 7,
 		},
 		{
 			name:       "Обычная инициализация",
@@ -171,7 +172,7 @@ func TestNewCache(t *testing.T) {
 func TestCache_DeleteNodeByKey(t *testing.T) {
 	tests := []struct {
 		name          string
-		shardCount    uint32
+		shardCount    int
 		shardCapacity int
 		vals          []kv  // Начальные данные для наполнения кэша
 		delKey        int   // Удаляемый ключ
@@ -298,11 +299,15 @@ func TestCache_DeleteNodeByKey(t *testing.T) {
 	}
 }
 
+// Распределение по 2 шардам по ключам 0-32 (x32):
+// 3 5 9 10 11 13 14 15 17 18 19 20 21 23 24 26 30 - в шард 1, остальное в 0
+// Распределение по 2 шардам по ключам 0-32 (x64):
+// 1 5 6 9 11 12 13 14 15 17 18 19 20 22 23 24 26 28 30 - в шард 1, остальное в 0
 func TestCache_Put(t *testing.T) {
 	tests := []struct {
 		name          string
 		shardCapacity int
-		shardCount    uint32
+		shardCount    int
 		vals          []kv  // Элементы для последовательной вставки
 		wantKV        []kv  // Что должно ОСТАТЬСЯ в кэше (в сумме по всем шардам)
 		dontWantKeys  []int // Что должно ИСЧЕЗНУТЬ из кэша (вытесниться)
@@ -331,14 +336,12 @@ func TestCache_Put(t *testing.T) {
 			wantKV:        []kv{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}},
 			dontWantKeys:  []int{},
 		},
-		//Распределение по шардам по ключам 0-32:
-		// 3 5 9 10 11 13 14 15 17 18 19 20 21 23 24 26 30 - в шард 1, остальное в 0
 		{
 			name:          "Переполнение шарда", // кроме 3 и 5 остальное попадает в 1 шард
 			shardCapacity: 2,
 			shardCount:    2,
 			vals:          []kv{{1, "a1"}, {2, "a2"}, {3, "a3"}, {4, "a4"}, {5, "a5"}, {6, "a6"}, {7, "a7"}, {8, "a8"}},
-			wantKV:        []kv{{7, "a7"}, {8, "a8"}, {3, "a3"}, {5, "a5"}},
+			wantKV:        []kv{{7, "a7"}, {8, "a8"}, {6, "a6"}, {5, "a5"}},
 			dontWantKeys:  []int{},
 		},
 	}
@@ -446,7 +449,7 @@ func TestCache_Get(t *testing.T) {
 	tests := []struct {
 		name          string
 		shardCapacity int
-		shardCount    uint32
+		shardCount    int
 		steps         []op     // Последовательность операций
 		wantGets      []string // Массив ответов, который мы ОЖИДАЕМ получить от всех вызовов Get по порядку
 	}{
@@ -466,16 +469,16 @@ func TestCache_Get(t *testing.T) {
 			shardCapacity: 2,
 			shardCount:    2,
 			steps: []op{
-				// 3, 5, 9 летят в Шард 1, 5 вытесняется как устаревший.
-				{name: "put", key: 3, val: "a3"},
+				// 1, 5, 9 летят в Шард 1, 5 вытесняется как устаревший.
+				{name: "put", key: 1, val: "a1"},
 				{name: "put", key: 5, val: "a5"},
-				{name: "get", key: 3},
+				{name: "get", key: 1},
 				{name: "put", key: 9, val: "a9"},
-				{name: "get", key: 3},
+				{name: "get", key: 1},
 				{name: "get", key: 5},
 				{name: "get", key: 9},
 			},
-			wantGets: []string{"a3", "a3", "", "a9"},
+			wantGets: []string{"a1", "a1", "", "a9"},
 		},
 	}
 
@@ -568,7 +571,7 @@ func TestCache_ConcurrentAccessLRU(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Запускаем 1000 горутин, которые одновременно пишут и читают
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		wg.Add(1)
 		go func(val int) {
 			defer wg.Done()

@@ -347,7 +347,7 @@ func TestLRUCache_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Запускаем 1000 горутин, которые одновременно пишут и читают
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		wg.Add(1)
 		go func(val int) {
 			defer wg.Done()
